@@ -44,6 +44,8 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
+    env:
+      RUNNER_HOST: ${{ secrets.RUNNER_HOST }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -63,13 +65,13 @@ jobs:
           chmod 600 ~/.ssh/runner
 
       - name: Add host key to known_hosts
-        if: secrets.RUNNER_HOST != ''
-        run: ssh-keyscan -H ${{ secrets.RUNNER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+        if: env.RUNNER_HOST != ''
+        run: ssh-keyscan -H "$RUNNER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Run playbook
         env:
           # Skip host key checking unless RUNNER_HOST is set (which populates known_hosts above).
-          ANSIBLE_HOST_KEY_CHECKING: ${{ secrets.RUNNER_HOST != '' && 'true' || 'false' }}
+          ANSIBLE_HOST_KEY_CHECKING: ${{ env.RUNNER_HOST != '' && 'true' || 'false' }}
         run: >-
           ansible-playbook playbook.yml
           --private-key ~/.ssh/runner
