@@ -1,0 +1,166 @@
+---
+# ==============================================================================
+# Docker CE + BuildKit
+#
+# Installs Docker from the official repository, configures the daemon for
+# build-runner use (log rotation, live-restore, BuildKit default), and sets
+# up a persistent BuildKit builder with generous cache limits.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Install Docker CE
+# ------------------------------------------------------------------------------
+
+- name: Create apt keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Download Docker GPG key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+
+- name: Add Docker repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/ubuntu
+      {{ ansible_distribution_release }} stable
+    filename: docker
+    state: present
+
+- name: Install Docker packages
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+    state: present
+    update_cache: true
+
+# ------------------------------------------------------------------------------
+# 2. Runner user → docker group
+#
+# Lets the runner process issue Docker commands without root. Group membership
+# takes effect on next login (the runner service starts a fresh session).
+# ------------------------------------------------------------------------------
+
+- name: Add runner user to docker group
+  ansible.builtin.user:
+    name: "{{ runner_user }}"
+    groups: docker
+    append: true
+
+# ------------------------------------------------------------------------------
+# 3. Daemon configuration
+# ------------------------------------------------------------------------------
+
+- name: Deploy Docker daemon configuration
+  ansible.builtin.template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart docker
+
+- name: Enable and start Docker
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+
+# ------------------------------------------------------------------------------
+# 4. Pull-through registry mirror
+#
+# A local Docker Registry container configured as a pull-through cache for
+# Docker Hub. Images are pulled once from upstream, then served locally on
+# subsequent requests. Avoids Docker Hub rate limits and cuts pull latency
+# to near-zero for cached images. Data persists in a named volume.
+# ------------------------------------------------------------------------------
+
+- name: Create registry cache volume
+  ansible.builtin.command:
+    cmd: docker volume create registry-cache
+  register: vol_create
+  changed_when: "'registry-cache' in vol_create.stdout"
+  failed_when: false
+  when: registry_mirror_enabled | default(true)
+
+- name: Start pull-through registry mirror
+  ansible.builtin.command:
+    cmd: >-
+      docker run -d
+      --name registry-mirror
+      --restart always
+      -p 5000:5000
+      -v registry-cache:/var/lib/registry
+      -e REGISTRY_PROXY_REMOTEURL=https://registry-1.docker.io
+      registry:2
+  register: mirror_start
+  changed_when: mirror_start.rc == 0
+  failed_when:
+    - mirror_start.rc != 0
+    - "'already in use' not in mirror_start.stderr"
+  when: registry_mirror_enabled | default(true)
+
+# ------------------------------------------------------------------------------
+# 5. Build scratch tmpfs
+#
+# A RAM-backed scratch area for intermediate build artifacts. Volatile (lost
+# on reboot) but very fast. Docker's persistent layer cache lives on disk
+# in /var/lib/docker — Linux page-cache keeps hot layers in RAM automatically.
+# ------------------------------------------------------------------------------
+
+- name: Create build scratch mount point
+  ansible.builtin.file:
+    path: "{{ build_scratch_path }}"
+    state: directory
+    owner: "{{ runner_user }}"
+    group: "{{ runner_group }}"
+    mode: "0755"
+
+- name: Mount tmpfs for build scratch
+  ansible.builtin.mount:
+    path: "{{ build_scratch_path }}"
+    src: tmpfs
+    fstype: tmpfs
+    opts: "size={{ build_scratch_tmpfs_size }},mode=1777"
+    state: mounted
+
+# ------------------------------------------------------------------------------
+# 5. BuildKit builder
+#
+# A persistent "docker-container" driver builder with its own cache namespace.
+# Layers persist across builds and survive runner/Docker restarts — a systemd
+# oneshot recreates the builder definition and bootstraps the container
+# whenever Docker starts.
+# ------------------------------------------------------------------------------
+
+- name: Deploy BuildKit builder ensure script
+  ansible.builtin.template:
+    src: ensure-buildkit-builder.sh.j2
+    dest: /usr/local/bin/ensure-buildkit-builder.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy BuildKit builder systemd service
+  ansible.builtin.template:
+    src: buildkit-builder.service.j2
+    dest: /etc/systemd/system/buildkit-builder.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Enable and start BuildKit builder service
+  ansible.builtin.systemd:
+    name: buildkit-builder
+    enabled: true
+    state: started
+    daemon_reload: true

@@ -1,0 +1,182 @@
+# ==============================================================================
+# Reusable build workflow for self-hosted runners
+#
+# Builds a Docker image with BuildKit and pushes it to any container registry.
+# Designed to run on runners provisioned by ansible-github-runner — it reuses
+# the persistent BuildKit builder and shared Docker layer cache, so subsequent
+# builds are fast without any remote cache configuration.
+#
+# HOW TO USE
+#
+# 1. Copy this file to your org's shared workflows repo or your app repo
+#    at .github/workflows/build-app.yml
+# 2. Authenticate to your registry before calling this workflow (see below)
+# 3. Call it from your CI:
+#
+#    jobs:
+#      build:
+#        uses: <your-org>/.github/workflows/build-app.yml@main
+#        with:
+#          image: ghcr.io/your-org/my-service
+#        secrets: inherit
+#
+# REGISTRY AUTHENTICATION
+#
+# This workflow assumes Docker is already authenticated to your registry.
+# Add a login step before the build in the caller workflow, or add a
+# registry login step below. Examples:
+#
+#   # GitHub Container Registry
+#   - uses: docker/login-action@v3
+#     with:
+#       registry: ghcr.io
+#       username: ${{ github.actor }}
+#       password: ${{ secrets.GITHUB_TOKEN }}
+#
+#   # AWS ECR
+#   - uses: aws-actions/amazon-ecr-login@v2
+#
+#   # GCP Artifact Registry
+#   - run: gcloud auth configure-docker <region>-docker.pkg.dev --quiet
+# ==============================================================================
+
+name: Build App
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: "Full image name without tag (e.g. ghcr.io/your-org/my-service)"
+        required: true
+        type: string
+      environment:
+        description: "If set, adds :<env> and :<env-sha> tags alongside :<sha>"
+        required: false
+        type: string
+        default: ""
+      dockerfile:
+        description: "Path to Dockerfile (relative to context)"
+        required: false
+        type: string
+        default: "Dockerfile"
+      context:
+        description: "Docker build context directory"
+        required: false
+        type: string
+        default: "."
+      build_args:
+        description: "Additional build args (newline-separated KEY=VALUE pairs)"
+        required: false
+        type: string
+        default: ""
+      build_secrets:
+        description: "Secret names to pass as BuildKit secrets (newline-separated names, resolved from inherited secrets)"
+        required: false
+        type: string
+        default: ""
+    outputs:
+      image:
+        description: "Full image reference with :<sha> tag"
+        value: ${{ jobs.build-and-push.outputs.image }}
+
+jobs:
+  build-and-push:
+    # Runs on the self-hosted runner provisioned by ansible-github-runner.
+    # The persistent BuildKit builder and shared Docker layer cache mean
+    # subsequent builds pull nothing and finish fast.
+    runs-on: self-hosted
+    permissions:
+      contents: read
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # --------------------------------------------------------------------------
+      # BuildKit setup
+      #
+      # Reuses the persistent-builder created by the ansible-github-runner
+      # playbook. The docker-container driver keeps its own build cache that
+      # persists across jobs — no need for actions/cache or registry-based
+      # caching. The configurable GC policy (see docker_buildkit_cache_size in group_vars) prevents
+      # unbounded disk growth.
+      # --------------------------------------------------------------------------
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        with:
+          name: persistent-builder
+          driver: docker-container
+          cleanup: false
+
+      # --------------------------------------------------------------------------
+      # Image tagging
+      #
+      # Always produces :<sha> (7-char). When environment is set, also
+      # produces :<env> (mutable, points to latest for that env) and
+      # :<env-sha> (immutable, for rollback).
+      # --------------------------------------------------------------------------
+      - name: Set image tags
+        id: meta
+        run: |
+          TAG="${GITHUB_SHA::7}"
+          IMAGE="${{ inputs.image }}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "image=${IMAGE}:${TAG}" >> "${GITHUB_OUTPUT}"
+
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:${TAG}"
+            if [ -n "${{ inputs.environment }}" ]; then
+              echo "${IMAGE}:${{ inputs.environment }}"
+              echo "${IMAGE}:${{ inputs.environment }}-${TAG}"
+            fi
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      # --------------------------------------------------------------------------
+      # Build secrets resolution
+      #
+      # Resolves secret names from the build_secrets input into KEY=VALUE
+      # pairs for BuildKit --secret. Secrets are available via
+      # `secrets: inherit` from the caller.
+      #
+      # In your Dockerfile, access them with:
+      #   RUN --mount=type=secret,id=SECRET_NAME cat /run/secrets/SECRET_NAME
+      # --------------------------------------------------------------------------
+      - name: Resolve build secrets
+        id: build-secrets
+        if: inputs.build_secrets != ''
+        env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+          REQUESTED_NAMES: ${{ inputs.build_secrets }}
+        run: |
+          resolved=""
+          while IFS= read -r name; do
+            name=$(echo "$name" | xargs)
+            [ -z "$name" ] && continue
+            value=$(echo "$ALL_SECRETS" | jq -r --arg k "$name" '.[$k] // empty')
+            if [ -n "$value" ]; then
+              resolved+="${name}=${value}"$'\n'
+            else
+              echo "::warning::Secret '${name}' listed in build_secrets but not found in inherited secrets"
+            fi
+          done <<< "$REQUESTED_NAMES"
+          {
+            echo "resolved<<GHEOF_BUILD_SECRETS"
+            printf '%s' "$resolved"
+            echo "GHEOF_BUILD_SECRETS"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.context }}/${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: ${{ inputs.build_args }}
+          secrets: ${{ steps.build-secrets.outputs.resolved }}
+          # No explicit cache config needed. The persistent BuildKit builder
+          # (docker-container driver, configurable GC policy) caches layers locally
+          # across builds. This is the whole point of self-hosted runners:
+          # warm caches without paying for remote cache storage.

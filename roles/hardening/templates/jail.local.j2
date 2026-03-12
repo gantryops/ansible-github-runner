@@ -1,0 +1,11 @@
+# Managed by Ansible — do not edit manually.
+
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+backend = systemd
+
+[sshd]
+enabled = true
+port = {{ ssh_port }}

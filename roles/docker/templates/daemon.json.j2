@@ -1,0 +1,15 @@
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "{{ docker_log_max_size }}",
+    "max-file": "{{ docker_log_max_file }}"
+  },
+  "live-restore": true,
+  "features": {
+    "buildkit": true
+  },
+  "storage-driver": "overlay2"{% if registry_mirror_enabled | default(true) %},
+  "registry-mirrors": ["http://localhost:5000"]
+{% endif %}
+
+}

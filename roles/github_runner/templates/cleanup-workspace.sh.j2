@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Managed by Ansible — do not edit manually.
+#
+# Pre-job hook: cleans the runner workspace to handle files that may be
+# owned by root (e.g. from Docker/BuildKit). Without this, actions/checkout
+# fails with EACCES when trying to delete root-owned files from a previous run.
+#
+# Invoked automatically via ACTIONS_RUNNER_HOOK_JOB_STARTED in the runner
+# systemd service.
+
+set -euo pipefail
+
+if [ -z "${GITHUB_WORKSPACE:-}" ] || [ ! -d "$GITHUB_WORKSPACE" ]; then
+  exit 0
+fi
+
+# Use a throwaway container to delete as root. The alpine image is cached
+# locally via the pull-through registry mirror, so this adds negligible
+# overhead (~0.1 s).
+docker run --rm -v "$GITHUB_WORKSPACE":/ws alpine sh -c "rm -rf /ws/.[!.]* /ws/*" 2>/dev/null || true

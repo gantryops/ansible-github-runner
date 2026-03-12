@@ -1,0 +1,17 @@
+# Ensures the persistent BuildKit builder exists after Docker starts.
+# Deployed by Ansible (docker role).
+
+[Unit]
+Description=Ensure persistent BuildKit builder
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User={{ runner_user }}
+Group={{ runner_group }}
+ExecStart=/usr/local/bin/ensure-buildkit-builder.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,27 @@
+---
+# ==============================================================================
+# Self-Hosted GitHub Actions Runner
+#
+# Provisions a Linux machine as a self-hosted GitHub Actions runner.
+# Three roles applied in order:
+#
+#   1. hardening      — OS-level security baseline
+#   2. docker         — Docker CE + BuildKit with persistent cache
+#   3. github_runner  — Runner binary, systemd service, cleanup timer
+#
+# Usage:
+#   ansible-playbook playbook.yml
+#
+# Registration: set github_pat in group_vars/runners.yml for automatic
+# registration, or leave it empty and register manually after the
+# playbook finishes. See README for details.
+# ==============================================================================
+
+- name: Provision GitHub Actions runner
+  hosts: runners
+  gather_facts: true
+
+  roles:
+    - hardening
+    - docker
+    - github_runner

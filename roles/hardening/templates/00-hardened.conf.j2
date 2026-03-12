@@ -1,0 +1,36 @@
+# Managed by Ansible — do not edit manually.
+#
+# Dropped into /etc/ssh/sshd_config.d/ with "00" prefix so it takes
+# priority (SSH first-match-wins) over distro defaults.
+
+Port {{ ssh_port }}
+
+# Key-based auth only — passwords and keyboard-interactive disabled.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PermitEmptyPasswords no
+PubkeyAuthentication yes
+
+# Allow root login with key only (needed for Ansible).
+PermitRootLogin prohibit-password
+
+# Disable unused authentication methods.
+GSSAPIAuthentication no
+KerberosAuthentication no
+
+# Session limits.
+MaxAuthTries 3
+MaxSessions 5
+LoginGraceTime 30
+
+# Disable X11 and agent forwarding — not needed on a build runner.
+X11Forwarding no
+AllowAgentForwarding no
+
+# Disable TCP forwarding to prevent the machine from being used as a
+# tunnel if the runner user is ever compromised.
+AllowTcpForwarding no
+
+# Log auth events for fail2ban and audit.
+LogLevel VERBOSE

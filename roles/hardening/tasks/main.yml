@@ -1,0 +1,141 @@
+---
+# ==============================================================================
+# OS Hardening
+#
+# Applies a baseline security configuration: SSH lockdown, firewall,
+# brute-force protection, automatic security patches, and kernel tuning.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. System packages & updates
+# ------------------------------------------------------------------------------
+
+- name: Update apt cache and upgrade all packages
+  ansible.builtin.apt:
+    update_cache: true
+    upgrade: dist
+    cache_valid_time: 3600
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ base_packages }}"
+    state: present
+
+# ------------------------------------------------------------------------------
+# 2. SSH hardening
+#
+# Drop-in config at /etc/ssh/sshd_config.d/00-hardened.conf — the "00" prefix
+# ensures it's read first (SSH uses first-match-wins), overriding any weaker
+# defaults in the distro's sshd_config.
+# ------------------------------------------------------------------------------
+
+- name: Deploy hardened SSH configuration
+  ansible.builtin.template:
+    src: 00-hardened.conf.j2
+    dest: /etc/ssh/sshd_config.d/00-hardened.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "sshd -t -f %s"
+  notify: Restart sshd
+
+# ------------------------------------------------------------------------------
+# 3. Firewall (UFW)
+#
+# Default-deny inbound, allow SSH. Outbound is unrestricted — the runner needs
+# to reach GitHub APIs, Docker registries, and Artifact Registry.
+# ------------------------------------------------------------------------------
+
+- name: Set UFW default deny incoming
+  community.general.ufw:
+    direction: incoming
+    policy: deny
+
+- name: Set UFW default allow outgoing
+  community.general.ufw:
+    direction: outgoing
+    policy: allow
+
+- name: Allow SSH through UFW
+  community.general.ufw:
+    rule: allow
+    port: "{{ ssh_port }}"
+    proto: tcp
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+
+# ------------------------------------------------------------------------------
+# 4. Fail2ban
+#
+# Protects SSH against brute-force. Uses the systemd backend since modern
+# Ubuntu logs to journald by default.
+# ------------------------------------------------------------------------------
+
+- name: Deploy fail2ban SSH jail config
+  ansible.builtin.template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart fail2ban
+
+- name: Enable and start fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban
+    enabled: true
+    state: started
+
+# ------------------------------------------------------------------------------
+# 5. Automatic security updates
+# ------------------------------------------------------------------------------
+
+- name: Enable unattended-upgrades for security patches
+  ansible.builtin.debconf:
+    name: unattended-upgrades
+    question: unattended-upgrades/enable_auto_updates
+    vtype: boolean
+    value: "true"
+
+- name: Reconfigure unattended-upgrades
+  ansible.builtin.command: dpkg-reconfigure -f noninteractive unattended-upgrades
+  changed_when: false
+
+# ------------------------------------------------------------------------------
+# 6. Kernel hardening (sysctl)
+#
+# Note: net.ipv4.ip_forward is left enabled because Docker requires it.
+# We harden everything else that doesn't conflict with container networking.
+# ------------------------------------------------------------------------------
+
+- name: Deploy sysctl hardening parameters
+  ansible.builtin.template:
+    src: sysctl-hardening.conf.j2
+    dest: /etc/sysctl.d/90-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload sysctl
+
+# ------------------------------------------------------------------------------
+# 7. Runner user
+#
+# Dedicated non-root user for the GitHub Actions runner process.
+# Added to the docker group so it can issue Docker commands without sudo.
+# ------------------------------------------------------------------------------
+
+- name: Create runner group
+  ansible.builtin.group:
+    name: "{{ runner_group }}"
+    state: present
+
+- name: Create runner user
+  ansible.builtin.user:
+    name: "{{ runner_user }}"
+    group: "{{ runner_group }}"
+    home: "{{ runner_home }}"
+    shell: /bin/bash
+    system: true
+    create_home: true

@@ -1,0 +1,7 @@
+all:
+  children:
+    runners:
+      hosts:
+        runner-01:
+          ansible_host: <fill-ip>
+          ansible_user: root

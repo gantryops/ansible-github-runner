@@ -1,0 +1,11 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart runner services
+  ansible.builtin.systemd:
+    name: "github-runner-{{ '%02d' | format(item) }}"
+    state: restarted
+    daemon_reload: true
+  loop: "{{ range(1, runner_count + 1) | list }}"

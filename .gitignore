@@ -1,0 +1,8 @@
+*.retry
+*.pyc
+__pycache__/
+.vagrant/
+*.log
+.env
+inventory/hosts.yml
+!inventory/hosts.yml.example

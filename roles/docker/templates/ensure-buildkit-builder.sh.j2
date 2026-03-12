@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Ensure the persistent BuildKit builder exists and is bootstrapped.
+# Deployed by Ansible; runs on every Docker start via systemd.
+set -euo pipefail
+
+BUILDER_NAME="persistent-builder"
+GC_POLICY="keep-bytes={{ docker_buildkit_cache_size }}"
+
+if ! docker buildx inspect "$BUILDER_NAME" &>/dev/null; then
+    echo "Creating BuildKit builder: $BUILDER_NAME"
+    docker buildx create \
+        --name "$BUILDER_NAME" \
+        --driver docker-container \
+        --driver-opt "env.BUILDKIT_GC_POLICY=$GC_POLICY" \
+        --use
+fi
+
+echo "Bootstrapping builder: $BUILDER_NAME"
+docker buildx inspect "$BUILDER_NAME" --bootstrap

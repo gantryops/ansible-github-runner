@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Managed by Ansible — do not edit manually.
+#
+# Prunes Docker resources older than {{ docker_prune_keep_hours }}h.
+# Runs daily via the cleanup-docker.timer systemd unit.
+
+set -euo pipefail
+
+echo "[$(date -Iseconds)] Starting Docker cleanup..."
+
+# Remove stopped containers older than the retention window.
+docker container prune --force --filter "until={{ docker_prune_keep_hours }}h"
+
+# Remove dangling images (untagged layers left over from builds).
+docker image prune --force --filter "until={{ docker_prune_keep_hours }}h"
+
+# Prune build cache beyond the configured limit. BuildKit keeps the most
+# recently used entries up to the byte limit.
+docker buildx prune --force --keep-storage {{ docker_buildkit_cache_size }}
+
+# Remove unused networks (not attached to any running container).
+docker network prune --force
+
+echo "[$(date -Iseconds)] Docker cleanup complete."

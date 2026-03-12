@@ -1,0 +1,204 @@
+---
+# ==============================================================================
+# GitHub Actions Self-Hosted Runner (multiple instances)
+#
+# Downloads the runner binary and creates N independent runner instances, each
+# with its own directory and systemd service. This lets the machine pick up
+# multiple jobs in parallel. When github_pat is set, registration is automatic;
+# otherwise the user registers runners manually after the playbook finishes.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Download runner
+# ------------------------------------------------------------------------------
+
+- name: Fetch latest runner version from GitHub API
+  ansible.builtin.uri:
+    url: https://api.github.com/repos/actions/runner/releases/latest
+    return_content: true
+  register: runner_release
+  changed_when: false
+  when: github_runner_version == "latest"
+
+- name: Set runner version fact
+  ansible.builtin.set_fact:
+    runner_version: "{{ (github_runner_version == 'latest') | ternary(runner_release.json.tag_name | regex_replace('^v', ''), github_runner_version) }}"
+
+- name: Download runner tarball
+  ansible.builtin.get_url:
+    url: "https://github.com/actions/runner/releases/download/v{{ runner_version }}/actions-runner-linux-x64-{{ runner_version }}.tar.gz"
+    dest: "/tmp/actions-runner-{{ runner_version }}.tar.gz"
+    mode: "0644"
+
+# ------------------------------------------------------------------------------
+# 2. Create runner instances
+#
+# Each instance gets its own directory under runner_home (e.g.
+# /opt/actions-runner/01, /opt/actions-runner/02, ...) with a separate
+# copy of the runner binary and its own systemd service.
+# ------------------------------------------------------------------------------
+
+- name: Create instance directories
+  ansible.builtin.file:
+    path: "{{ runner_home }}/{{ '%02d' | format(item) }}"
+    state: directory
+    owner: "{{ runner_user }}"
+    group: "{{ runner_group }}"
+    mode: "0755"
+  loop: "{{ range(1, runner_count + 1) | list }}"
+
+- name: Extract runner to each instance directory
+  ansible.builtin.unarchive:
+    src: "/tmp/actions-runner-{{ runner_version }}.tar.gz"
+    dest: "{{ runner_home }}/{{ '%02d' | format(item) }}"
+    remote_src: true
+    owner: "{{ runner_user }}"
+    group: "{{ runner_group }}"
+    creates: "{{ runner_home }}/{{ '%02d' | format(item) }}/config.sh"
+  loop: "{{ range(1, runner_count + 1) | list }}"
+
+# ------------------------------------------------------------------------------
+# 3. Auto-registration (optional)
+#
+# When github_pat is set, the playbook calls the GitHub API to obtain a
+# short-lived registration token and runs config.sh for each instance
+# automatically. Skipped entirely when github_pat is empty — in that case
+# the user registers runners manually after the playbook finishes.
+#
+# The scope (org vs repo) determines which API endpoint to call:
+#   - org:  POST /orgs/{org}/actions/runners/registration-token
+#   - repo: POST /repos/{org}/{repo}/actions/runners/registration-token
+# ------------------------------------------------------------------------------
+
+- name: Build registration URL
+  ansible.builtin.set_fact:
+    _runner_url: >-
+      {{ (github_runner_scope == 'repo')
+         | ternary('https://github.com/' + github_org + '/' + github_repo,
+                   'https://github.com/' + github_org) }}
+    _api_path: >-
+      {{ (github_runner_scope == 'repo')
+         | ternary('repos/' + github_org + '/' + github_repo,
+                   'orgs/' + github_org) }}
+  when: github_pat | default('') | length > 0
+
+- name: Obtain registration token from GitHub API
+  ansible.builtin.uri:
+    url: "https://api.github.com/{{ _api_path }}/actions/runners/registration-token"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ github_pat }}"
+      Accept: application/vnd.github+json
+    status_code: 201
+  register: _reg_token
+  when: github_pat | default('') | length > 0
+
+- name: Build runner labels string
+  ansible.builtin.set_fact:
+    _labels_arg: >-
+      {{ (github_runner_labels | length > 0)
+         | ternary('--labels ' + (github_runner_labels | join(',')), '') }}
+  when: github_pat | default('') | length > 0
+
+- name: Register runner instances
+  ansible.builtin.command:
+    cmd: >-
+      ./config.sh --unattended
+      --url {{ _runner_url }}
+      --token {{ _reg_token.json.token }}
+      --name runner-{{ '%02d' | format(item) }}
+      --work _work
+      {{ _labels_arg }}
+    chdir: "{{ runner_home }}/{{ '%02d' | format(item) }}"
+    creates: "{{ runner_home }}/{{ '%02d' | format(item) }}/.runner"
+  become: true
+  become_user: "{{ runner_user }}"
+  loop: "{{ range(1, runner_count + 1) | list }}"
+  when: github_pat | default('') | length > 0
+
+# ------------------------------------------------------------------------------
+# 4. Pre-job workspace cleanup hook
+#
+# Self-hosted runners persist workspaces across jobs. Files created by
+# Docker (as root) can't be deleted by the non-root runner user, causing
+# actions/checkout to fail with EACCES. This hook runs before each job
+# and uses a throwaway container to clean the workspace as root.
+# ------------------------------------------------------------------------------
+
+- name: Install workspace cleanup hook
+  ansible.builtin.template:
+    src: cleanup-workspace.sh.j2
+    dest: /usr/local/bin/cleanup-workspace.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+
+# ------------------------------------------------------------------------------
+# 5. Systemd services
+#
+# One service per instance. When auto-registration is used (github_pat set),
+# runners start immediately. Otherwise they remain enabled but won't start
+# until config.sh has been run manually — that's expected.
+# ------------------------------------------------------------------------------
+
+- name: Install runner systemd services
+  ansible.builtin.template:
+    src: github-runner.service.j2
+    dest: "/etc/systemd/system/github-runner-{{ '%02d' | format(item) }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ range(1, runner_count + 1) | list }}"
+  notify:
+    - Reload systemd
+    - Restart runner services
+
+- name: Enable runner services
+  ansible.builtin.systemd:
+    name: "github-runner-{{ '%02d' | format(item) }}"
+    enabled: true
+    daemon_reload: true
+  loop: "{{ range(1, runner_count + 1) | list }}"
+
+- name: Start runner services (auto-registered)
+  ansible.builtin.systemd:
+    name: "github-runner-{{ '%02d' | format(item) }}"
+    state: started
+  loop: "{{ range(1, runner_count + 1) | list }}"
+  when: github_pat | default('') | length > 0
+
+# ------------------------------------------------------------------------------
+# 6. Docker cleanup timer
+# ------------------------------------------------------------------------------
+
+- name: Install Docker cleanup script
+  ansible.builtin.template:
+    src: cleanup-docker.sh.j2
+    dest: /usr/local/bin/cleanup-docker.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install cleanup systemd service
+  ansible.builtin.template:
+    src: cleanup-docker.service.j2
+    dest: /etc/systemd/system/cleanup-docker.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install cleanup systemd timer
+  ansible.builtin.template:
+    src: cleanup-docker.timer.j2
+    dest: /etc/systemd/system/cleanup-docker.timer
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable cleanup timer
+  ansible.builtin.systemd:
+    name: cleanup-docker.timer
+    enabled: true
+    state: started
+    daemon_reload: true

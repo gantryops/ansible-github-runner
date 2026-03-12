@@ -1,0 +1,12 @@
+# Managed by Ansible — do not edit manually.
+
+[Unit]
+Description=Daily Docker cleanup
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target

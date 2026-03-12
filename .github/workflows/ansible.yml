@@ -1,0 +1,75 @@
+# ==============================================================================
+# Weekly Maintenance — Self-Hosted Runner
+#
+# Re-runs the Ansible playbook to keep Docker, OS packages, and the runner
+# binary up to date. The playbook is idempotent — runner registration is
+# a one-time manual step and is not affected.
+#
+# WHY RUN THIS ON A SCHEDULE?
+#
+# Self-hosted runners are long-lived infrastructure. Unlike GitHub-hosted
+# runners (fresh VM every job), yours accumulate state: Docker images pile
+# up, OS packages fall behind on security patches, the runner binary itself
+# gets stale. A weekly re-run of the playbook keeps everything current
+# without manual SSH sessions. Because the playbook is idempotent, it only
+# changes what's drifted — a clean run takes under 2 minutes.
+#
+# HOW TO ENABLE
+#
+# This workflow is disabled by default (template repo). To activate it:
+#
+#   1. Uncomment the `schedule` trigger below
+#   2. Add GitHub secrets:
+#      - SSH_PRIVATE_KEY — Private SSH key for root@runner
+#      - RUNNER_HOST     — (optional) IP or hostname. Enables strict
+#                          host key checking. Omit to skip.
+#   3. Push to main
+#
+# The workflow also supports manual dispatch via the "Run workflow" button
+# in the Actions tab — useful for testing before enabling the schedule.
+# ==============================================================================
+
+name: Ansible — Update Runner
+
+on:
+  # Uncomment the schedule below to enable weekly maintenance runs.
+  # schedule:
+  #   - cron: "0 6 * * 1" # Every Monday at 06:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ansible-provision
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Ansible
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ansible
+
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: Write SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/runner
+          chmod 600 ~/.ssh/runner
+
+      - name: Add host key to known_hosts
+        if: secrets.RUNNER_HOST != ''
+        run: ssh-keyscan -H ${{ secrets.RUNNER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run playbook
+        env:
+          # Skip host key checking unless RUNNER_HOST is set (which populates known_hosts above).
+          ANSIBLE_HOST_KEY_CHECKING: ${{ secrets.RUNNER_HOST != '' && 'true' || 'false' }}
+        run: >-
+          ansible-playbook playbook.yml
+          --private-key ~/.ssh/runner

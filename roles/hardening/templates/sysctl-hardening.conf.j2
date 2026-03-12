@@ -1,0 +1,40 @@
+# Managed by Ansible — do not edit manually.
+#
+# Kernel hardening parameters. net.ipv4.ip_forward is intentionally absent
+# because Docker requires it enabled.
+
+# SYN flood protection.
+net.ipv4.tcp_syncookies = 1
+
+# Prevent ICMP redirect attacks.
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+
+# Ignore ICMP broadcast requests (Smurf attack mitigation).
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+
+# Log martian packets (packets with impossible source addresses).
+net.ipv4.conf.all.log_martians = 1
+net.ipv4.conf.default.log_martians = 1
+
+# Disable source routing.
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv6.conf.all.accept_source_route = 0
+net.ipv6.conf.default.accept_source_route = 0
+
+# Prevent TIME_WAIT assassination attacks.
+net.ipv4.tcp_rfc1337 = 1
+
+# Harden BPF JIT compiler.
+net.core.bpf_jit_harden = 2
+
+# Restrict dmesg access to root.
+kernel.dmesg_restrict = 1
+
+# Restrict kernel pointer exposure.
+kernel.kptr_restrict = 2

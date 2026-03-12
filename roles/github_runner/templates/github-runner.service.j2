@@ -1,0 +1,36 @@
+# Managed by Ansible — do not edit manually.
+
+[Unit]
+Description=GitHub Actions Runner {{ '%02d' | format(item) }} ({{ github_org }})
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User={{ runner_user }}
+Group={{ runner_group }}
+WorkingDirectory={{ runner_home }}/{{ '%02d' | format(item) }}
+ExecStart={{ runner_home }}/{{ '%02d' | format(item) }}/run.sh
+Restart=always
+RestartSec=5
+
+# Send SIGTERM to the main process first, then SIGKILL remaining children
+# after TimeoutStopSec. KillMode=process only kills run.sh, leaving
+# Runner.Listener orphaned — which blocks restarts (session conflict)
+# and prevents new environment variables from taking effect.
+KillMode=mixed
+TimeoutStopSec=60
+
+# Generous limits for parallel builds.
+LimitNOFILE=65536
+LimitNPROC=65536
+
+# Minimal environment — the runner picks up the rest from .env/.path.
+# The runner reads ACTIONS_RUNNER_HOOK_* via Environment.GetEnvironmentVariable()
+# in the .NET binary, so it must be in the process environment (systemd), not
+# just the runner's .env file.
+Environment=RUNNER_ALLOW_RUNASROOT=0
+Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/bin/cleanup-workspace.sh
+
+[Install]
+WantedBy=multi-user.target

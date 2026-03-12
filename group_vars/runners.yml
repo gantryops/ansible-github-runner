@@ -1,0 +1,83 @@
+# ==============================================================================
+# GitHub Runner Configuration
+# ==============================================================================
+
+github_org: your-org
+
+# Runner scope: "org" registers runners for the entire organisation,
+# "repo" registers them for a single repository. When using "repo",
+# set github_repo to the repository name (e.g. "my-app").
+github_runner_scope: org
+github_repo: ""
+
+# Personal access token for automatic runner registration. When set, the
+# playbook calls the GitHub API to obtain a registration token and runs
+# config.sh without manual intervention. Required scopes:
+#   - org scope:  admin:org
+#   - repo scope: repo
+# Leave empty to register runners manually after the playbook finishes.
+github_pat: ""
+
+# Runner binary version. Set to "latest" (default) to auto-fetch the newest
+# release, or pin to a specific version like "2.321.0" for reproducibility.
+github_runner_version: latest
+
+# Labels applied to the runner — workflows target it via `runs-on:`.
+github_runner_labels: []
+
+# Number of runner instances — each picks up one job at a time.
+runner_count: 8
+
+# Dedicated system user for the runner process (never run as root).
+runner_user: runner
+runner_group: runner
+runner_home: /opt/actions-runner
+
+# ==============================================================================
+# Docker & Build Cache
+# ==============================================================================
+
+# Pull-through registry mirror — caches Docker Hub images locally to avoid
+# rate limits and speed up pulls. Set to false if you use a private registry
+# or don't need caching.
+registry_mirror_enabled: true
+
+# BuildKit GC policy: keep up to this much cache before pruning.
+# With 128 GB RAM on the host, Linux page-cache will keep hot layers in
+# memory automatically — the disk-backed cache here provides persistence
+# across reboots.
+docker_buildkit_cache_size: 50gb
+
+docker_log_max_size: 50m
+docker_log_max_file: "5"
+
+# tmpfs for ephemeral build scratch (intermediate artifacts, COPY buffers).
+# Volatile by nature — survives only until reboot, which is fine for scratch.
+build_scratch_tmpfs_size: 32G
+build_scratch_path: /mnt/build-scratch
+
+# ==============================================================================
+# Hardening
+# ==============================================================================
+
+ssh_port: 22
+
+# Prune stopped containers, dangling images, and stale build cache older than
+# this many hours. Runs on a daily systemd timer.
+docker_prune_keep_hours: 72
+
+# Packages to install on every runner.
+base_packages:
+  - curl
+  - wget
+  - git
+  - jq
+  - unzip
+  - apt-transport-https
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - fail2ban
+  - ufw
+  - unattended-upgrades
+  - apt-listchanges
