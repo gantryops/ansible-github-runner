@@ -8,6 +8,8 @@ GitHub-hosted runners are convenient — until they're not. At scale, you hit th
 
 1. **Cost.** GitHub charges per-minute for Actions. Standard 2-core Linux runners are cheap (~$36/month overage for 20 builds/day at 15 min each on the Team plan), but most real CI workloads need larger runners — an 8-core runner costs ~$0.064/min, and a 16-core hits ~$0.128/min. At 9,000 minutes/month that's $576–$1,152. A single bare-metal server ($50–150/month) handles the same load with room to spare.
 
+   > **Self-Hosted "Tax":** GitHub introduced a $0.002/minute platform fee for self-hosted runners in private repositories (effective March 2026). Even with this fee, a dedicated server remains 5x–10x cheaper than buying managed minutes.
+
 2. **Speed.** GitHub-hosted runners are ephemeral VMs. While you can use registry cache or GitHub Actions cache to persist Docker layers, every build still pulls them over the network — there's no local layer cache, no local registry mirror. Self-hosted runners keep a warm local cache, so subsequent builds pull nothing and finish in a fraction of the time.
 
 3. **Control.** Need GPUs? Specific kernel modules? More than 14 GB of RAM? A particular CPU architecture? Self-hosted runners give you the machine you actually need, not a lowest-common-denominator VM.
@@ -162,6 +164,21 @@ graph TD
 | `hardening` | SSH key-only auth, UFW firewall, fail2ban, unattended-upgrades, sysctl tuning |
 | `docker` | Docker CE + BuildKit, pull-through registry mirror, tmpfs scratch volume |
 | `github_runner` | Runner instances (auto-fetches latest binary), systemd services, daily Docker cleanup |
+
+## Security model
+
+Self-hosted runners share a Docker daemon, and any user in the `docker` group has effective root access to the host. This means a workflow job can mount the host filesystem, access other runner directories, or escalate privileges via Docker.
+
+This is a known trade-off of all self-hosted runners — GitHub [explicitly warns](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#self-hosted-runner-security) against using them on public repositories.
+
+**This playbook is designed for private repositories with trusted contributors.** The hardening it applies:
+
+- Runner processes run as an unprivileged `runner` user (never root)
+- A pre-job cleanup hook wipes the workspace before each job, preventing cross-job data leakage
+- SSH is key-only, UFW firewall and fail2ban are enabled
+- Unattended security upgrades keep the OS patched
+
+If you need stronger isolation (untrusted code, public repos), consider GitHub-hosted runners or an auto-scaling solution that provisions ephemeral instances per job.
 
 ## Build cache
 
