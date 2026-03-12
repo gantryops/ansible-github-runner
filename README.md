@@ -55,6 +55,8 @@ Any Linux box works — bare-metal, VPS, cloud VM. Install **Ubuntu 24.04 LTS** 
 
 **Our recommendation:** [Hetzner server auction](https://www.hetzner.com/sb/) offers the best performance per dollar for CI workloads. Look for an AX102 or similar — 32-core AMD EPYC, 128 GB ECC RAM, 2× NVMe. You'll get 10–20x the compute of a GitHub-hosted runner for a fraction of the cost. For cloud VM benchmarks and price comparisons, see [Cloud VM Benchmarks 2026](https://devblog.ecuadors.net/cloud-vm-benchmarks-2026-performance-price-1i1m.html).
 
+> **Tip: hourly-billed VMs.** If you're using a cloud provider that bills by the hour, you don't need to run your runner 24/7. Use a [GitHub Actions schedule](https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#schedule) to start the VM before business hours and stop it at night/weekends, or use an auto-scaler to spin instances up on demand. This way you only pay for the hours you actually use.
+
 ### 2. Configure
 
 Copy the example inventory and fill in your server's IP:
@@ -138,24 +140,19 @@ Verify runners show as "Idle" in GitHub org (or repo) settings.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────┐
-│  Linux server (bare-metal or VM)                │
-│                                                  │
-│  ┌──────────┐ ┌──────────┐       ┌──────────┐   │
-│  │ runner-01│ │ runner-02│  ...  │ runner-08│   │
-│  └────┬─────┘ └────┬─────┘       └────┬─────┘   │
-│       │             │                  │         │
-│       └─────────────┼──────────────────┘         │
-│                     ▼                            │
-│              Docker daemon                       │
-│           (shared layer cache)                   │
-│                     │                            │
-│        ┌────────────┼────────────┐               │
-│        ▼            ▼            ▼               │
-│  registry-mirror  BuildKit   tmpfs scratch       │
-│  (localhost:5000) (GC policy) (/mnt/build-scratch)│
-└─────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph server["Linux server (bare-metal or VM)"]
+        r1["runner-01"] --> docker
+        r2["runner-02"] --> docker
+        rN["runner-N"] --> docker
+
+        docker["Docker daemon\n(shared layer cache)"]
+
+        docker --> mirror["Registry mirror\nlocalhost:5000"]
+        docker --> buildkit["BuildKit\n(GC policy)"]
+        docker --> tmpfs["tmpfs scratch\n/mnt/build-scratch"]
+    end
 ```
 
 ## Roles
@@ -247,6 +244,15 @@ done
 # Check registry mirror logs
 docker logs registry-mirror
 ```
+
+## Alternatives
+
+If you're looking for cloud-specific, auto-scaling solutions rather than Ansible on a single machine:
+
+- [**terraform-aws-github-runner**](https://github.com/github-aws-runners/terraform-aws-github-runner) — Terraform module that spins up ephemeral AWS EC2 instances per job
+- [**actions-runner-controller (ARC)**](https://github.com/actions/actions-runner-controller) — Kubernetes-native, scales runner pods on demand
+
+This playbook is a good fit when you want a simple, cloud-agnostic setup on a dedicated machine without Terraform or Kubernetes.
 
 ---
 
